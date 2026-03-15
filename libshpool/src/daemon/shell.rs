@@ -210,6 +210,9 @@ pub struct ShellToClientArgs {
     // true if the client is still live, false if it has hung up on us
     pub heartbeat_ack: crossbeam_channel::Sender<bool>,
     pub child_exit_notifier: Arc<ExitNotifier>,
+    // true = plain text, false = ANSI formatted
+    pub hardcopy: crossbeam_channel::Receiver<bool>,
+    pub hardcopy_ack: crossbeam_channel::Sender<Vec<u8>>,
 }
 
 impl SessionInner {
@@ -394,6 +397,20 @@ impl SessionInner {
 
                         args.heartbeat_ack.send(client_present)
                             .context("sending heartbeat ack")?;
+                    }
+                    recv(args.hardcopy) -> plain_flag => {
+                        match plain_flag {
+                            Ok(plain) => {
+                                let data = if plain {
+                                    output_spool.contents_plain()
+                                } else {
+                                    output_spool.contents_formatted_hardcopy()
+                                };
+                                args.hardcopy_ack.send(data)
+                                    .context("sending hardcopy ack")?;
+                            }
+                            Err(_) => { /* channel closed, ignore */ }
+                        }
                     }
 
                     // make this select non-blocking so we spend most of our time parked
@@ -1033,6 +1050,12 @@ pub struct ReaderCtl {
     // True if the client is still listening, false if it has hung up
     // on us.
     pub heartbeat_ack: crossbeam_channel::Receiver<bool>,
+
+    // A control channel for requesting a hardcopy of the screen buffer.
+    // Sends true for plain text, false for ANSI formatted.
+    pub hardcopy: crossbeam_channel::Sender<bool>,
+    // Receives the screen buffer contents.
+    pub hardcopy_ack: crossbeam_channel::Receiver<Vec<u8>>,
 }
 
 /// Given a buffer, a length after which the data is not valid, a list of

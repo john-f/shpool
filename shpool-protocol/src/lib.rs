@@ -63,6 +63,8 @@ pub enum ConnectHeader {
     Kill(KillRequest),
     // A request to set the log level to a new value.
     SetLogLevel(SetLogLevelRequest),
+    /// A request to dump the current screen buffer of a session.
+    Hardcopy(HardcopyRequest),
 }
 
 /// KillRequest represents a request to kill
@@ -121,6 +123,26 @@ pub struct SetLogLevelRequest {
 
 #[derive(Serialize, Deserialize, Debug)]
 pub struct SetLogLevelReply {}
+
+/// HardcopyRequest represents a request to dump the
+/// current screen buffer of a named session.
+#[derive(Serialize, Deserialize, Debug)]
+pub struct HardcopyRequest {
+    #[serde(default)]
+    pub session_name: String,
+    /// If true, strip ANSI escape codes from the output.
+    #[serde(default)]
+    pub plain: bool,
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+pub enum HardcopyReply {
+    Ok {
+        #[serde(default)]
+        data: Vec<u8>,
+    },
+    NotFound,
+}
 
 /// SessionMessageRequest represents a request that
 /// ought to be routed to the session indicated by

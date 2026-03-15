@@ -35,9 +35,10 @@ use anyhow::{anyhow, Context};
 use nix::unistd;
 use shpool_protocol::{
     AttachHeader, AttachReplyHeader, AttachStatus, ConnectHeader, DetachReply, DetachRequest,
-    KillReply, KillRequest, ListReply, LogLevel, ResizeReply, Session, SessionMessageDetachReply,
-    SessionMessageReply, SessionMessageRequest, SessionMessageRequestPayload, SessionStatus,
-    SetLogLevelReply, SetLogLevelRequest, VersionHeader,
+    HardcopyReply, HardcopyRequest, KillReply, KillRequest, ListReply, LogLevel, ResizeReply,
+    Session, SessionMessageDetachReply, SessionMessageReply, SessionMessageRequest,
+    SessionMessageRequestPayload, SessionStatus, SetLogLevelReply, SetLogLevelRequest,
+    VersionHeader,
 };
 use tracing::{debug, error, info, instrument, span, warn, Level};
 
@@ -209,6 +210,7 @@ impl Server {
             ConnectHeader::List => self.handle_list(stream),
             ConnectHeader::SessionMessage(header) => self.handle_session_message(stream, header),
             ConnectHeader::SetLogLevel(r) => self.handle_set_log_level(stream, r),
+            ConnectHeader::Hardcopy(r) => self.handle_hardcopy(stream, r),
         }
     }
 
@@ -624,6 +626,43 @@ impl Server {
     }
 
     #[instrument(skip_all)]
+    fn handle_hardcopy(
+        &self,
+        mut stream: UnixStream,
+        request: HardcopyRequest,
+    ) -> anyhow::Result<()> {
+        let reply = {
+            let shells = self.shells.lock().unwrap();
+            if let Some(session) = shells.get(&request.session_name) {
+                let shell_to_client_ctl = session.shell_to_client_ctl.lock().unwrap();
+                match shell_to_client_ctl
+                    .hardcopy
+                    .send_timeout(request.plain, SESSION_MSG_TIMEOUT)
+                {
+                    Ok(()) => {
+                        match shell_to_client_ctl.hardcopy_ack.recv_timeout(SESSION_MSG_TIMEOUT) {
+                            Ok(data) => HardcopyReply::Ok { data },
+                            Err(e) => {
+                                warn!("hardcopy ack recv error: {:?}", e);
+                                HardcopyReply::Ok { data: vec![] }
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        warn!("hardcopy send error: {:?}", e);
+                        HardcopyReply::Ok { data: vec![] }
+                    }
+                }
+            } else {
+                HardcopyReply::NotFound
+            }
+        };
+
+        write_reply(&mut stream, reply).context("writing hardcopy reply")?;
+        Ok(())
+    }
+
+    #[instrument(skip_all)]
     fn handle_list(&self, mut stream: UnixStream) -> anyhow::Result<()> {
         let _s = span!(Level::INFO, "lock(shells)").entered();
         let shells = self.shells.lock().unwrap();
@@ -943,6 +982,9 @@ impl Server {
         let (heartbeat_tx, heartbeat_rx) = crossbeam_channel::bounded(0);
         let (heartbeat_ack_tx, heartbeat_ack_rx) = crossbeam_channel::bounded(0);
 
+        let (hardcopy_tx, hardcopy_rx) = crossbeam_channel::bounded(0);
+        let (hardcopy_ack_tx, hardcopy_ack_rx) = crossbeam_channel::bounded(0);
+
         let shell_to_client_ctl = Arc::new(Mutex::new(shell::ReaderCtl {
             client_connection: client_connection_tx,
             client_connection_ack: client_connection_ack_rx,
@@ -950,6 +992,8 @@ impl Server {
             tty_size_change_ack: tty_size_change_ack_rx,
             heartbeat: heartbeat_tx,
             heartbeat_ack: heartbeat_ack_rx,
+            hardcopy: hardcopy_tx,
+            hardcopy_ack: hardcopy_ack_rx,
         }));
 
         let mut session_inner = shell::SessionInner {
@@ -983,6 +1027,8 @@ impl Server {
                 tty_size_change_ack: tty_size_change_ack_tx,
                 heartbeat: heartbeat_rx,
                 heartbeat_ack: heartbeat_ack_tx,
+                hardcopy: hardcopy_rx,
+                hardcopy_ack: hardcopy_ack_tx,
                 child_exit_notifier: shell_to_client_child_exit_notifier,
             })?);
 

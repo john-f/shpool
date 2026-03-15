@@ -36,6 +36,7 @@ mod daemon;
 mod daemonize;
 mod detach;
 mod duration;
+mod hardcopy;
 mod hooks;
 mod kill;
 mod list;
@@ -209,6 +210,15 @@ needs debugging, but would be clobbered by a restart.")]
         #[clap(help = "new log level")]
         level: shpool_protocol::LogLevel,
     },
+
+    #[clap(about = "Dump the current screen buffer of a session to stdout")]
+    #[non_exhaustive]
+    Hardcopy {
+        #[clap(long, help = "Strip ANSI escape codes for plain text output")]
+        plain: bool,
+        #[clap(help = "The name of the session to dump")]
+        name: String,
+    },
 }
 
 impl Args {
@@ -381,6 +391,7 @@ pub fn run(args: Args, hooks: Option<Box<dyn hooks::Hooks + Send + Sync>>) -> an
         Commands::Kill { sessions } => kill::run(sessions, socket),
         Commands::List { json } => list::run(socket, json),
         Commands::SetLogLevel { level } => set_log_level::run(level, socket),
+        Commands::Hardcopy { plain, name } => hardcopy::run(name, plain, socket),
     };
 
     if let Err(err) = res {
