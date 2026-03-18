@@ -41,6 +41,63 @@ use crate::{
 
 const SHELL_KILL_TIMEOUT: time::Duration = time::Duration::from_millis(500);
 
+/// Clamp cursor-up escape sequences (\x1b[{N}A) so the total upward movement
+/// in a single write never exceeds `max_rows`. This prevents terminals from
+/// snapping the viewport to the top of scrollback when Ink/readline emit more
+/// cursor-ups than the viewport height.
+fn clamp_cursor_up(input: &[u8], max_rows: u16) -> Vec<u8> {
+    let max = max_rows as usize;
+    if max == 0 {
+        return input.to_vec();
+    }
+
+    let mut out = Vec::with_capacity(input.len());
+    let mut budget = max;
+    let mut i = 0;
+
+    while i < input.len() {
+        // Look for ESC [ <digits> A
+        if input[i] == 0x1b && i + 1 < input.len() && input[i + 1] == b'[' {
+            // Parse digits after '['
+            let mut j = i + 2;
+            while j < input.len() && input[j].is_ascii_digit() {
+                j += 1;
+            }
+            // Check for 'A' terminator (cursor up)
+            if j < input.len() && input[j] == b'A' {
+                let n: usize = if j == i + 2 {
+                    1 // bare \x1b[A means move up 1
+                } else {
+                    // parse the digit string
+                    std::str::from_utf8(&input[i + 2..j])
+                        .ok()
+                        .and_then(|s| s.parse().ok())
+                        .unwrap_or(1)
+                };
+
+                if budget == 0 {
+                    // Drop this sequence entirely
+                    i = j + 1;
+                    continue;
+                }
+
+                let allowed = n.min(budget);
+                budget -= allowed;
+
+                // Write clamped sequence
+                out.extend_from_slice(format!("\x1b[{}A", allowed).as_bytes());
+                i = j + 1;
+                continue;
+            }
+        }
+
+        out.push(input[i]);
+        i += 1;
+    }
+
+    out
+}
+
 const SHELL_EXIT_WAIT_DUR: time::Duration = time::Duration::from_millis(500);
 
 const SUPERVISOR_POLL_DUR: time::Duration = time::Duration::from_millis(300);
@@ -521,7 +578,8 @@ impl SessionInner {
                 if let (ClientConnectionMsg::New(conn), true) =
                     (&mut client_conn, has_seen_prompt_sentinel)
                 {
-                    let chunk = Chunk { kind: ChunkKind::Data, buf };
+                    let filtered = clamp_cursor_up(buf, conn.size.rows);
+                    let chunk = Chunk { kind: ChunkKind::Data, buf: &filtered };
 
                     // If we still need to do an initial motd dump, it means we have just finished
                     // dropping all the prompt setup stuff, we should dump the motd now before we
